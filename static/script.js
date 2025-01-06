@@ -52,22 +52,30 @@ function createMessageElement(message, type) {
     return messageDiv;
 }
 
-function addMessage(message, type) {
+function addMessage(message, type, audioFilename = null) {
     const chatContainer = document.getElementById('chat-container');
     const messageElement = createMessageElement(message, type);
     chatContainer.appendChild(messageElement);
     chatContainer.scrollTop = chatContainer.scrollHeight;
+
+    // If there's an audio file, play it
+    if (type === 'bot' && audioFilename) {
+        const audio = new Audio(`${baseURL}/audio/${audioFilename}`);
+        audio.play().catch(error => {
+            console.error('Error playing audio:', error);
+        });
+    }
 }
 
-async function askQuestion() {
+async function askQuestion(question = null) {
     const input = document.getElementById('question-input');
-    const question = input.value.trim();
-    
-    if (!question) return;
+    const userQuestion = question || input.value.trim();
+
+    if (!userQuestion) return;
 
     // Add user message
-    addMessage(question, 'user');
-    input.value = '';
+    addMessage(userQuestion, 'user');
+    if (!question) input.value = '';
 
     try {
         const response = await fetch(`${baseURL}/ask`, {
@@ -77,14 +85,15 @@ async function askQuestion() {
             },
             body: JSON.stringify({
                 user_id: userID,
-                question: question
+                question: userQuestion
             })
         });
 
         const data = await response.json();
 
         if (data.status === 'success') {
-            addMessage(data.data.text, 'bot');
+            const aiResponse = data.data;
+            addMessage(aiResponse.text, 'bot', aiResponse.audio);
         } else {
             addMessage('Sorry, I encountered an error processing your request.', 'bot');
         }
@@ -101,43 +110,77 @@ document.getElementById('question-input').addEventListener('keypress', function(
     }
 });
 
-// Voice input functionality
-let isRecording = false;
+// Voice input functionality with manual start/stop
 let mediaRecorder = null;
 let audioChunks = [];
+const voiceBtn = document.getElementById('voice-btn');
 
-async function toggleVoiceInput() {
-    if (!isRecording) {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            mediaRecorder = new MediaRecorder(stream);
-            
-            mediaRecorder.ondataavailable = (event) => {
-                audioChunks.push(event.data);
-            };
+// Update voice button event listener
+voiceBtn.addEventListener('click', toggleVoiceInput);
 
-            mediaRecorder.onstop = async () => {
-                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-                await sendAudioToServer(audioBlob);
-                audioChunks = [];
-            };
-
-            mediaRecorder.start();
-            isRecording = true;
-            document.querySelector('.voice-btn').style.background = '#ff4444';
-        } catch (error) {
-            console.error('Error accessing microphone:', error);
-        }
-    } else {
+function toggleVoiceInput() {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+        // Stop recording
         mediaRecorder.stop();
-        isRecording = false;
-        document.querySelector('.voice-btn').style.background = '#4DC1C1';
+    } else {
+        // Start recording
+        startRecording();
+    }
+}
+
+async function startRecording() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(stream);
+        audioChunks = [];
+
+        mediaRecorder.ondataavailable = (event) => {
+            audioChunks.push(event.data);
+        };
+
+        mediaRecorder.onstart = () => {
+            // Update UI to show recording state
+            voiceBtn.classList.add('recording');
+            // Optionally, change the icon to indicate recording
+            voiceBtn.innerHTML = `
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="12" cy="12" r="3" fill="white"/>
+                    <path d="M19 10V14" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M5 10V14" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            `;
+        };
+
+        mediaRecorder.onstop = async () => {
+            // Update UI to show not recording
+            voiceBtn.classList.remove('recording');
+            // Revert the icon back to microphone
+            voiceBtn.innerHTML = `
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 1C11.2044 1 10.4413 1.31607 9.87868 1.87868C9.31607 2.44129 9 3.20435 9 4V12C9 12.7956 9.31607 13.5587 9.87868 14.1213C10.4413 14.6839 11.2044 15 12 15C12.7956 15 13.5587 14.6839 14.1213 14.1213C14.6839 13.5587 15 12.7956 15 12V4C15 3.20435 14.6839 2.44129 14.1213 1.87868C13.5587 1.31607 12.7956 1 12 1Z" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M19 10V12C19 13.8565 18.2625 15.637 16.9497 16.9497C15.637 18.2625 13.8565 19 12 19C10.1435 19 8.36301 18.2625 7.05025 16.9497C5.7375 15.637 5 13.8565 5 12V10" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            `;
+
+            // Convert audioChunks to a single Blob
+            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+            await sendAudioToServer(audioBlob);
+
+            // Stop all tracks to release the microphone
+            mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            mediaRecorder = null;
+        };
+
+        mediaRecorder.start();
+    } catch (error) {
+        console.error('Error accessing microphone:', error);
+        alert('Unable to access your microphone. Please check your browser settings.');
     }
 }
 
 async function sendAudioToServer(audioBlob) {
     const formData = new FormData();
-    formData.append('file', audioBlob);
+    formData.append('file', audioBlob, 'recording.webm');
 
     try {
         const response = await fetch(`${baseURL}/speech_to_text`, {
@@ -148,11 +191,15 @@ async function sendAudioToServer(audioBlob) {
         const data = await response.json();
         
         if (data.status === 'success') {
-            document.getElementById('question-input').value = data.text;
+            const recognizedText = data.text;
+            addMessage(`You (voice): ${recognizedText}`, 'user');
+            await askQuestion(recognizedText);
         } else {
             console.error('Speech to text error:', data.error);
+            addMessage('Sorry, I could not understand your speech. Please try again.', 'bot');
         }
     } catch (error) {
         console.error('Error sending audio:', error);
+        addMessage('Sorry, I encountered an error processing your speech.', 'bot');
     }
 }
